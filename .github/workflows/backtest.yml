@@ -1,6 +1,10 @@
 name: Backtest
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/backtest.yml'
   schedule:
     - cron: '0 0 * * *'          # Daily at midnight UTC
   workflow_dispatch:
