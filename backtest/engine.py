@@ -61,7 +61,7 @@ def load_benchmark_data(start: str, end: str) -> dict:
 
 def run_rules_only(state: BacktestState, all_data: dict,
                    bias_threshold: float = 7.0, stop_loss_pct: float = 5.0,
-                   trailing_pct: float = 30.0):
+                   trailing_pct: float = 35.0):
     """
     Run rules-only backtest with trailing stops.
 
@@ -310,7 +310,7 @@ def main():
     parser.add_argument('--max-api-calls', type=int, default=1400)
     parser.add_argument('--bias-threshold', type=float, default=7.0)
     parser.add_argument('--stop-loss-pct', type=float, default=5.0)
-    parser.add_argument('--trailing-pct', type=float, default=30.0)
+    parser.add_argument('--trailing-pct', type=float, default=35.0)
 
     args = parser.parse_args()
 
