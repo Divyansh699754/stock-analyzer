@@ -19,7 +19,7 @@ class Portfolio:
     """Simulated portfolio with separate USD and INR cash pools."""
 
     def __init__(self, cash_usd: float = 10000, cash_inr: float = 1000000,
-                 max_position_pct: float = 0.20):
+                 max_position_pct: float = 0.25):
         self.cash_usd = cash_usd
         self.cash_inr = cash_inr
         self.initial_usd = cash_usd

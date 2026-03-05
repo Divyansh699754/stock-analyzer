@@ -170,22 +170,22 @@ def _should_buy_rules(indicators: dict, visible_df: pd.DataFrame,
     if indicators.get('volume_ratio', 0) < 1.0:
         return False
 
-    # MA5 cross above MA10 (recent crossover)
+    # MA10 cross above MA20 (slower, higher quality signals)
     close = visible_df['Close']
-    ma5 = close.rolling(5).mean()
     ma10 = close.rolling(10).mean()
-    if len(ma5) >= 2 and len(ma10) >= 2:
-        prev_diff = float(ma5.iloc[-2]) - float(ma10.iloc[-2])
-        curr_diff = float(ma5.iloc[-1]) - float(ma10.iloc[-1])
+    ma20 = close.rolling(20).mean()
+    if len(ma10) >= 2 and len(ma20) >= 2:
+        prev_diff = float(ma10.iloc[-2]) - float(ma20.iloc[-2])
+        curr_diff = float(ma10.iloc[-1]) - float(ma20.iloc[-1])
         if not (prev_diff <= 0 and curr_diff > 0):
-            # Not a fresh crossover — check if within last 3 days
+            # Not a fresh crossover — check if within last 5 days
             recent_cross = False
-            for j in range(min(3, len(ma5) - 1)):
+            for j in range(min(5, len(ma10) - 1)):
                 idx = -(j + 2)
-                if idx < -len(ma5):
+                if idx < -len(ma10):
                     break
-                p = float(ma5.iloc[idx]) - float(ma10.iloc[idx])
-                c = float(ma5.iloc[idx + 1]) - float(ma10.iloc[idx + 1])
+                p = float(ma10.iloc[idx]) - float(ma20.iloc[idx])
+                c = float(ma10.iloc[idx + 1]) - float(ma20.iloc[idx + 1])
                 if p <= 0 and c > 0:
                     recent_cross = True
                     break
@@ -198,14 +198,14 @@ def _should_buy_rules(indicators: dict, visible_df: pd.DataFrame,
 def _should_sell_rules(indicators: dict, visible_df: pd.DataFrame) -> bool:
     """Check if rules-based sell conditions are met."""
     close = visible_df['Close']
-    ma5 = close.rolling(5).mean()
     ma10 = close.rolling(10).mean()
+    ma20 = close.rolling(20).mean()
 
-    if len(ma5) >= 2 and len(ma10) >= 2:
-        prev_diff = float(ma5.iloc[-2]) - float(ma10.iloc[-2])
-        curr_diff = float(ma5.iloc[-1]) - float(ma10.iloc[-1])
+    if len(ma10) >= 2 and len(ma20) >= 2:
+        prev_diff = float(ma10.iloc[-2]) - float(ma20.iloc[-2])
+        curr_diff = float(ma10.iloc[-1]) - float(ma20.iloc[-1])
         if prev_diff >= 0 and curr_diff < 0:
-            return True  # Death cross
+            return True  # Death cross (MA10 below MA20)
 
     return False
 
@@ -331,9 +331,9 @@ def main():
     parser.add_argument('--cash-inr', type=float, default=1000000)
     parser.add_argument('--state-file', type=str, default='backtest/state/progress.json')
     parser.add_argument('--max-api-calls', type=int, default=1400)
-    parser.add_argument('--bias-threshold', type=float, default=5.0)
-    parser.add_argument('--stop-loss-pct', type=float, default=5.0)
-    parser.add_argument('--target-pct', type=float, default=15.0)
+    parser.add_argument('--bias-threshold', type=float, default=7.0)
+    parser.add_argument('--stop-loss-pct', type=float, default=7.0)
+    parser.add_argument('--target-pct', type=float, default=25.0)
 
     args = parser.parse_args()
 
