@@ -60,22 +60,23 @@ def load_benchmark_data(start: str, end: str) -> dict:
 
 
 def run_rules_only(state: BacktestState, all_data: dict,
-                   bias_threshold: float = 5.0, stop_loss_pct: float = 5.0,
-                   target_pct: float = 15.0):
+                   bias_threshold: float = 7.0, stop_loss_pct: float = 7.0,
+                   trailing_pct: float = 12.0):
     """
-    Run rules-only backtest. No API calls. Pure math.
+    Run rules-only backtest with trailing stops.
 
     Buy when ALL true:
-    - MA5 just crossed above MA10
+    - MA5 just crossed above MA10 (within last 3 days)
     - MA5 > MA10 > MA20 (bullish alignment)
     - RSI between 30 and 70
     - BIAS < threshold
-    - Volume above 20-day average
 
     Sell when ANY true:
-    - Price hit stop-loss
-    - Price hit target
-    - MA5 crossed below MA10
+    - Trailing stop hit (price drops trailing_pct% from peak)
+    - Initial stop-loss hit
+    - NO fixed target — let winners ride
+
+    No MA death cross sell — rely on trailing stop to exit.
     """
     # Build trading calendar (union of all dates)
     all_dates = set()
@@ -104,10 +105,10 @@ def run_rules_only(state: BacktestState, all_data: dict,
             if mask.any():
                 current_prices[symbol] = float(df.loc[mask, 'Close'].iloc[-1])
 
-        # 1. Check stops on existing holdings
-        state.portfolio.check_stops(current_prices, date)
+        # 1. Update trailing stops and check if any triggered
+        state.portfolio.update_trailing_stops(current_prices, date)
 
-        # 2. Evaluate each symbol for entry/exit
+        # 2. Evaluate each symbol for entry
         for symbol in state.symbols:
             if symbol not in all_data:
                 continue
@@ -128,18 +129,15 @@ def run_rules_only(state: BacktestState, all_data: dict,
             if price is None:
                 continue
 
-            # Check sell conditions (if holding)
+            # Skip if already holding
             if symbol in state.portfolio.holdings:
-                if _should_sell_rules(indicators, visible):
-                    state.portfolio.sell(symbol, price, date, reason='MA5 crossed below MA10')
                 continue
 
-            # Check buy conditions (if not holding)
+            # Check buy conditions
             if _should_buy_rules(indicators, visible, bias_threshold):
-                stop = round(price * (1 - stop_loss_pct / 100), 2)
-                target = round(price * (1 + target_pct / 100), 2)
                 state.portfolio.buy(symbol, price, date,
-                                   stop_loss=stop, target=target)
+                                   stop_loss_pct=stop_loss_pct,
+                                   trailing_pct=trailing_pct)
 
         # Record daily value
         values = state.portfolio.get_total_value(current_prices)
@@ -166,48 +164,27 @@ def _should_buy_rules(indicators: dict, visible_df: pd.DataFrame,
     if rsi < 30 or rsi > 70:
         return False
 
-    # Volume above average
-    if indicators.get('volume_ratio', 0) < 1.0:
-        return False
-
-    # MA10 cross above MA20 (slower, higher quality signals)
+    # MA5 cross above MA10 (recent crossover within last 3 days)
     close = visible_df['Close']
+    ma5 = close.rolling(5).mean()
     ma10 = close.rolling(10).mean()
-    ma20 = close.rolling(20).mean()
-    if len(ma10) >= 2 and len(ma20) >= 2:
-        prev_diff = float(ma10.iloc[-2]) - float(ma20.iloc[-2])
-        curr_diff = float(ma10.iloc[-1]) - float(ma20.iloc[-1])
-        if not (prev_diff <= 0 and curr_diff > 0):
-            # Not a fresh crossover — check if within last 5 days
-            recent_cross = False
-            for j in range(min(5, len(ma10) - 1)):
-                idx = -(j + 2)
-                if idx < -len(ma10):
-                    break
-                p = float(ma10.iloc[idx]) - float(ma20.iloc[idx])
-                c = float(ma10.iloc[idx + 1]) - float(ma20.iloc[idx + 1])
-                if p <= 0 and c > 0:
-                    recent_cross = True
-                    break
-            if not recent_cross:
-                return False
+    if len(ma5) >= 2 and len(ma10) >= 2:
+        # Check for crossover in last 3 days
+        found_cross = False
+        for j in range(min(3, len(ma5) - 1)):
+            idx = -(j + 1)
+            prev_idx = idx - 1
+            if prev_idx < -len(ma5):
+                break
+            prev_diff = float(ma5.iloc[prev_idx]) - float(ma10.iloc[prev_idx])
+            curr_diff = float(ma5.iloc[idx]) - float(ma10.iloc[idx])
+            if prev_diff <= 0 and curr_diff > 0:
+                found_cross = True
+                break
+        if not found_cross:
+            return False
 
     return True
-
-
-def _should_sell_rules(indicators: dict, visible_df: pd.DataFrame) -> bool:
-    """Check if rules-based sell conditions are met."""
-    close = visible_df['Close']
-    ma10 = close.rolling(10).mean()
-    ma20 = close.rolling(20).mean()
-
-    if len(ma10) >= 2 and len(ma20) >= 2:
-        prev_diff = float(ma10.iloc[-2]) - float(ma20.iloc[-2])
-        curr_diff = float(ma10.iloc[-1]) - float(ma20.iloc[-1])
-        if prev_diff >= 0 and curr_diff < 0:
-            return True  # Death cross (MA10 below MA20)
-
-    return False
 
 
 def run_llm_mode(state: BacktestState, all_data: dict,
@@ -250,8 +227,8 @@ def run_llm_mode(state: BacktestState, all_data: dict,
             if mask.any():
                 current_prices[symbol] = float(df.loc[mask, 'Close'].iloc[-1])
 
-        # Check stops
-        state.portfolio.check_stops(current_prices, date)
+        # Update trailing stops
+        state.portfolio.update_trailing_stops(current_prices, date)
 
         # Analyze each symbol via LLM
         for symbol in state.symbols:
@@ -271,7 +248,6 @@ def run_llm_mode(state: BacktestState, all_data: dict,
                 if price is None:
                     continue
 
-                # Build stock_data dict for prompt
                 stock_data = {
                     'symbol': symbol,
                     'name': symbol,
@@ -293,12 +269,9 @@ def run_llm_mode(state: BacktestState, all_data: dict,
 
                 analysis = parse_analysis(response)
 
-                # Execute based on LLM signal
                 if analysis['signal'] == 'Buy' and symbol not in state.portfolio.holdings:
-                    stop = analysis.get('stop_loss') or round(price * 0.95, 2)
-                    target = analysis.get('target_price') or round(price * 1.15, 2)
                     state.portfolio.buy(symbol, price, date,
-                                       stop_loss=stop, target=target)
+                                       stop_loss_pct=7.0, trailing_pct=12.0)
                 elif analysis['signal'] == 'Sell' and symbol in state.portfolio.holdings:
                     state.portfolio.sell(symbol, price, date,
                                        reason=f'LLM signal: {analysis["core_conclusion"]}')
@@ -333,7 +306,7 @@ def main():
     parser.add_argument('--max-api-calls', type=int, default=1400)
     parser.add_argument('--bias-threshold', type=float, default=7.0)
     parser.add_argument('--stop-loss-pct', type=float, default=7.0)
-    parser.add_argument('--target-pct', type=float, default=25.0)
+    parser.add_argument('--trailing-pct', type=float, default=12.0)
 
     args = parser.parse_args()
 
@@ -368,7 +341,7 @@ def main():
         run_rules_only(state, all_data,
                       bias_threshold=args.bias_threshold,
                       stop_loss_pct=args.stop_loss_pct,
-                      target_pct=args.target_pct)
+                      trailing_pct=args.trailing_pct)
     else:
         run_llm_mode(state, all_data, max_api_calls=args.max_api_calls)
 

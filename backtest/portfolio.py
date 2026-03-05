@@ -1,5 +1,5 @@
 """
-Backtest portfolio — fake portfolio with separate USD/INR pools.
+Backtest portfolio — fake portfolio with separate USD/INR pools and trailing stops.
 """
 
 from dataclasses import dataclass, field
@@ -11,7 +11,8 @@ class Holding:
     quantity: int
     avg_cost: float
     stop_loss: float = 0.0
-    target: float = 0.0
+    peak_price: float = 0.0        # highest price since entry (for trailing stop)
+    trailing_pct: float = 10.0     # trailing stop distance in %
     entry_date: str = ''
 
 
@@ -19,7 +20,7 @@ class Portfolio:
     """Simulated portfolio with separate USD and INR cash pools."""
 
     def __init__(self, cash_usd: float = 10000, cash_inr: float = 1000000,
-                 max_position_pct: float = 0.25):
+                 max_position_pct: float = 0.30):
         self.cash_usd = cash_usd
         self.cash_inr = cash_inr
         self.initial_usd = cash_usd
@@ -41,25 +42,14 @@ class Portfolio:
         else:
             self.cash_usd = amount
 
-    def _get_total_pool(self, symbol: str, current_prices: dict) -> float:
-        """Total value of the relevant currency pool (cash + holdings)."""
-        cash = self._get_cash(symbol)
-        is_indian = self._is_indian(symbol)
-        holdings_value = sum(
-            h.quantity * current_prices.get(h.symbol, h.avg_cost)
-            for h in self.holdings.values()
-            if self._is_indian(h.symbol) == is_indian
-        )
-        return cash + holdings_value
-
     def buy(self, symbol: str, price: float, date: str,
-            stop_loss: float = 0, target: float = 0) -> bool:
+            stop_loss_pct: float = 7.0, trailing_pct: float = 10.0) -> bool:
         """
         Buy a stock. Position sized to max_position_pct of pool.
-        Returns True if trade executed.
+        Uses trailing stop instead of fixed target.
         """
         if symbol in self.holdings:
-            return False  # already holding
+            return False
 
         cash = self._get_cash(symbol)
         max_amount = cash * self.max_position_pct
@@ -70,12 +60,16 @@ class Portfolio:
 
         cost = quantity * price
         self._set_cash(symbol, cash - cost)
+
+        initial_stop = round(price * (1 - stop_loss_pct / 100), 2)
+
         self.holdings[symbol] = Holding(
             symbol=symbol,
             quantity=quantity,
             avg_cost=price,
-            stop_loss=stop_loss,
-            target=target,
+            stop_loss=initial_stop,
+            peak_price=price,
+            trailing_pct=trailing_pct,
             entry_date=date,
         )
 
@@ -98,8 +92,7 @@ class Portfolio:
         proceeds = h.quantity * price
         self._set_cash(symbol, self._get_cash(symbol) + proceeds)
 
-        cost = h.quantity * h.avg_cost
-        pnl = proceeds - cost
+        pnl = proceeds - (h.quantity * h.avg_cost)
         pnl_pct = round((price - h.avg_cost) / h.avg_cost * 100, 2)
 
         trade = {
@@ -115,8 +108,12 @@ class Portfolio:
         self.trades.append(trade)
         return trade
 
-    def check_stops(self, current_prices: dict, date: str) -> list:
-        """Check stop-loss and take-profit for all holdings. Returns list of triggered trades."""
+    def update_trailing_stops(self, current_prices: dict, date: str) -> list:
+        """
+        Update trailing stops and check if any are triggered.
+        - If price made a new high → move stop up
+        - If price dropped below trailing stop → sell
+        """
         triggered = []
         symbols = list(self.holdings.keys())
 
@@ -126,12 +123,17 @@ class Portfolio:
             if price is None:
                 continue
 
-            if h.stop_loss > 0 and price <= h.stop_loss:
-                trade = self.sell(symbol, price, date, reason='Stop-loss triggered')
-                if trade:
-                    triggered.append(trade)
-            elif h.target > 0 and price >= h.target:
-                trade = self.sell(symbol, price, date, reason='Target reached')
+            # Update peak price and trailing stop
+            if price > h.peak_price:
+                h.peak_price = price
+                new_stop = round(price * (1 - h.trailing_pct / 100), 2)
+                if new_stop > h.stop_loss:
+                    h.stop_loss = new_stop
+
+            # Check if stop triggered
+            if price <= h.stop_loss:
+                reason = 'Trailing stop' if price > h.avg_cost else 'Stop-loss'
+                trade = self.sell(symbol, price, date, reason=reason)
                 if trade:
                     triggered.append(trade)
 
@@ -172,7 +174,8 @@ class Portfolio:
                     'quantity': h.quantity,
                     'avg_cost': h.avg_cost,
                     'stop_loss': h.stop_loss,
-                    'target': h.target,
+                    'peak_price': h.peak_price,
+                    'trailing_pct': h.trailing_pct,
                     'entry_date': h.entry_date,
                 }
                 for s, h in self.holdings.items()
@@ -185,7 +188,7 @@ class Portfolio:
         p = cls(
             cash_usd=data['cash_usd'],
             cash_inr=data['cash_inr'],
-            max_position_pct=data.get('max_position_pct', 0.20),
+            max_position_pct=data.get('max_position_pct', 0.30),
         )
         p.initial_usd = data.get('initial_usd', data['cash_usd'])
         p.initial_inr = data.get('initial_inr', data['cash_inr'])
@@ -195,7 +198,8 @@ class Portfolio:
                 quantity=h['quantity'],
                 avg_cost=h['avg_cost'],
                 stop_loss=h.get('stop_loss', 0),
-                target=h.get('target', 0),
+                peak_price=h.get('peak_price', h['avg_cost']),
+                trailing_pct=h.get('trailing_pct', 10.0),
                 entry_date=h.get('entry_date', ''),
             )
         return p
