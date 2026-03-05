@@ -60,8 +60,8 @@ def load_benchmark_data(start: str, end: str) -> dict:
 
 
 def run_rules_only(state: BacktestState, all_data: dict,
-                   bias_threshold: float = 7.0, stop_loss_pct: float = 7.0,
-                   trailing_pct: float = 12.0):
+                   bias_threshold: float = 7.0, stop_loss_pct: float = 5.0,
+                   trailing_pct: float = 15.0):
     """
     Run rules-only backtest with trailing stops.
 
@@ -155,6 +155,11 @@ def _should_buy_rules(indicators: dict, visible_df: pd.DataFrame,
     if not ('Bullish' in indicators.get('trend_status', '')):
         return False
 
+    # MACD confirmation — require MACD above signal line
+    macd_status = indicators.get('macd_status', 'Bearish')
+    if macd_status not in ('Bullish', 'Golden Cross'):
+        return False
+
     # BIAS check
     if abs(indicators.get('bias_ma5', 99)) >= bias_threshold:
         return False
@@ -164,14 +169,13 @@ def _should_buy_rules(indicators: dict, visible_df: pd.DataFrame,
     if rsi < 30 or rsi > 70:
         return False
 
-    # MA5 cross above MA10 (recent crossover within last 3 days)
+    # MA5 cross above MA10 (recent crossover within last 5 days)
     close = visible_df['Close']
     ma5 = close.rolling(5).mean()
     ma10 = close.rolling(10).mean()
     if len(ma5) >= 2 and len(ma10) >= 2:
-        # Check for crossover in last 3 days
         found_cross = False
-        for j in range(min(3, len(ma5) - 1)):
+        for j in range(min(5, len(ma5) - 1)):
             idx = -(j + 1)
             prev_idx = idx - 1
             if prev_idx < -len(ma5):
@@ -305,8 +309,8 @@ def main():
     parser.add_argument('--state-file', type=str, default='backtest/state/progress.json')
     parser.add_argument('--max-api-calls', type=int, default=1400)
     parser.add_argument('--bias-threshold', type=float, default=7.0)
-    parser.add_argument('--stop-loss-pct', type=float, default=7.0)
-    parser.add_argument('--trailing-pct', type=float, default=12.0)
+    parser.add_argument('--stop-loss-pct', type=float, default=5.0)
+    parser.add_argument('--trailing-pct', type=float, default=15.0)
 
     args = parser.parse_args()
 
