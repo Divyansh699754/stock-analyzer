@@ -1,0 +1,109 @@
+name: Backtest
+
+on:
+  schedule:
+    - cron: '0 0 * * *'          # Daily at midnight UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Backtest mode'
+        required: true
+        default: 'rules-only'
+        type: choice
+        options:
+          - rules-only
+          - llm
+      symbols:
+        description: 'Stocks to backtest'
+        default: 'AAPL,TSLA,NVDA,RELIANCE.NS,TCS.NS'
+      start_date:
+        description: 'Start date'
+        default: '2016-01-01'
+      end_date:
+        description: 'End date'
+        default: '2025-12-31'
+      cash_usd:
+        description: 'Starting USD budget'
+        default: '10000'
+      cash_inr:
+        description: 'Starting INR budget'
+        default: '1000000'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Try loading previous progress
+      - name: Download previous state
+        uses: actions/download-artifact@v4
+        with:
+          name: backtest-state
+          path: backtest/state/
+        continue-on-error: true
+
+      # Run the backtest
+      - name: Run backtest
+        run: |
+          python -m backtest.engine \
+            --mode "${{ inputs.mode || 'rules-only' }}" \
+            --symbols "${{ inputs.symbols || 'AAPL,TSLA,NVDA,RELIANCE.NS,TCS.NS' }}" \
+            --start "${{ inputs.start_date || '2016-01-01' }}" \
+            --end "${{ inputs.end_date || '2025-12-31' }}" \
+            --cash-usd "${{ inputs.cash_usd || '10000' }}" \
+            --cash-inr "${{ inputs.cash_inr || '1000000' }}" \
+            --state-file backtest/state/progress.json \
+            --max-api-calls 1400
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      # Save progress for tomorrow
+      - name: Upload state
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-state
+          path: backtest/state/progress.json
+          overwrite: true
+
+      # Save reports if generated
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-report
+          path: reports/backtest/
+          retention-days: 90
+
+      # Send Telegram progress update
+      - name: Notify progress
+        if: always()
+        run: |
+          python -c "
+          import json, os, requests
+          token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+          chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+          if not token or not chat_id:
+              print('No Telegram config, skipping notification')
+              exit(0)
+          try:
+              state = json.load(open('backtest/state/progress.json'))
+              msg = f'Backtest {state[\"status\"]}: {state.get(\"current_day_index\",0)}/{state.get(\"total_days\",0)} days ({state.get(\"current_day_index\",0)/max(state.get(\"total_days\",1),1)*100:.1f}%)'
+              if state['status'] == 'complete':
+                  msg = '✅ BACKTEST COMPLETE! Check GitHub Actions for the full report.'
+              requests.post(f'https://api.telegram.org/bot{token}/sendMessage',
+                  json={'chat_id': chat_id, 'text': msg})
+          except Exception as e:
+              print(f'Notification failed: {e}')
+          "
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
